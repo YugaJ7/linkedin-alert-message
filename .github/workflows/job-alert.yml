@@ -10,7 +10,7 @@ concurrency:                  # never run two checks at the same time
   cancel-in-progress: false
 
 permissions:
-  contents: write             # lets the bot save seen_jobs.json
+  contents: read              # the bot never commits; seen jobs live in the Actions cache
 
 jobs:
   run:
@@ -24,16 +24,23 @@ jobs:
 
       - run: pip install requests beautifulsoup4
 
+      # Load the list of already-notified jobs from the latest run's cache.
+      - name: Restore seen jobs
+        uses: actions/cache/restore@v4
+        with:
+          path: seen_jobs.json
+          key: seen-jobs-${{ github.run_id }}
+          restore-keys: seen-jobs-
+
       - name: Check for new jobs
         env:
           NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
         run: python job_alert.py
 
+      # Store the updated list for the next run (no commit to the repo).
       - name: Save seen jobs
-        run: |
-          git config user.name "job-alert-bot"
-          git config user.email "bot@users.noreply.github.com"
-          git add seen_jobs.json || true
-          git diff --cached --quiet || git commit -m "update seen jobs [skip ci]"
-          git pull --rebase || true
-          git push || true
+        if: always() && hashFiles('seen_jobs.json') != ''
+        uses: actions/cache/save@v4
+        with:
+          path: seen_jobs.json
+          key: seen-jobs-${{ github.run_id }}-${{ github.run_attempt }}
