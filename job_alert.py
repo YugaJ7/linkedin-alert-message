@@ -39,6 +39,9 @@ SEARCH_KEYWORDS = [
     '"android developer" OR "android intern" OR "android internship" OR "android engineer"',
     '"mobile app developer" OR "mobile application developer" OR "app developer intern" OR "kotlin developer"',
     '"SDE 1" OR "SDE I" OR "software development engineer I" OR "software engineer I"',
+    '"software engineer" OR "software developer" OR "associate software engineer" OR "graduate engineer trainee"',
+    '"junior software engineer" OR "junior software developer" OR "trainee software engineer" OR "software engineer fresher"',
+    '"backend developer" OR "python developer" OR "node.js developer" OR "AI engineer" OR "web developer"',
     '"full stack developer" OR "full stack engineer" OR "full stack intern" OR "full stack internship" OR "MERN stack developer"',
 ]
 
@@ -56,31 +59,30 @@ PAGE_SIZE = 10
 MAX_PAGES = 2
 
 # ---- Title filter (short forms included) ----
-# Mobile and full stack roles count at intern OR junior level (the search is already
-# limited to internship + entry level), e.g. "Flutter Developer", "Jr Full Stack Developer".
-INTERN_OR_JUNIOR_ROLE_PATTERN = re.compile(
-    r"\b(flutter|dart|android|kotlin|jetpack compose|mobile|ios|"
-    r"app developer|application developer|full[- ]?stack|mern)\b",
+# These roles count at ANY fresher level: intern, trainee, junior, jr, associate,
+# graduate, level 1, or no level at all (the search is already limited to
+# internship + entry level). e.g. "Software Engineer", "Jr. Flutter Developer",
+# "Associate Software Engineer", "SDE-1", "Python Developer", "AI Engineer".
+JUNIOR_ROLE_PATTERN = re.compile(
+    r"\b(software|sde|swe|developer|programmer|"
+    r"flutter|dart|android|kotlin|jetpack compose|mobile|ios|"
+    r"full[- ]?stack|mern|mean|back[- ]?end|front[- ]?end|"
+    r"associate engineer|graduate engineer|(ai|ml|genai|llm) engineer)\b",
     re.I,
 )
-# Software roles count only as internships, e.g. "SDE Intern", "SE Intern", "SD Intern".
-SOFTWARE_ROLE_PATTERN = re.compile(
-    r"\b(sde|swe|se|sd|software|developer|development|engineer(ing)?|programmer|"
-    r"stack|full[- ]?stack|back[- ]?end|front[- ]?end|web|mern|mean|react)\b",
-    re.I,
-)
-# Level-1 software roles are fresher roles, so they count without "intern":
-# "SDE-1", "SDE 1", "SDE I", "SWE-I", "Software Engineer I", "Software Development Engineer 1".
-LEVEL_ONE_PATTERN = re.compile(
-    r"\b(sde|swe|software (development )?engineer|software developer)\s*[-–]?\s*(1|i)\b", re.I
-)
+# These broader words count only as internships, e.g. "SE Intern", "SD Intern",
+# "Data Engineer Intern", "Web Development Intern", "React Internship".
+INTERN_ONLY_ROLE_PATTERN = re.compile(r"\b(se|sd|engineer(ing)?|development|stack|web|react)\b", re.I)
 INTERN_PATTERN = re.compile(r"\b(intern|internship|trainee|apprentice)\b", re.I)
-# Titles matching either of these are always skipped.
+# Titles matching either of these are always skipped: senior words, and level 2+
+# such as "SDE-2", "SDE II", "Software Engineer 3".
 SENIOR_PATTERN = re.compile(
-    r"\b(senior|sr|lead|principal|staff|manager|head|architect|director|ii|iii|iv)\b", re.I
+    r"\b(senior|sr|lead|principal|staff|manager|head|architect|director|vp|ii|iii|iv)\b"
+    r"|\b(sde|swe|engineer|developer)\s*[-–]?\s*[2-9]\b",
+    re.I,
 )
 EXCLUDE_PATTERN = re.compile(
-    r"\b(sales|marketing|hr|human resources?|content|seo|bde|business development|"
+    r"\b(sales|marketing|hr|human resources?|content|seo|bde|business develop(ment|er)|curriculum|"
     r"recruit(er|ing|ment)|talent acquisition|mechanical|civil|electrical|chemical)\b",
     re.I,
 )
@@ -224,9 +226,9 @@ def fetch_description(job_id: str) -> str:
 def is_relevant(title: str) -> bool:
     if EXCLUDE_PATTERN.search(title) or SENIOR_PATTERN.search(title):
         return False
-    if INTERN_OR_JUNIOR_ROLE_PATTERN.search(title) or LEVEL_ONE_PATTERN.search(title):
+    if JUNIOR_ROLE_PATTERN.search(title):
         return True
-    return bool(SOFTWARE_ROLE_PATTERN.search(title) and INTERN_PATTERN.search(title))
+    return bool(INTERN_ONLY_ROLE_PATTERN.search(title) and INTERN_PATTERN.search(title))
 
 
 def match_skills(text: str) -> list[str]:
