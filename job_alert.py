@@ -28,6 +28,12 @@ from bs4 import BeautifulSoup, Tag
 
 # ============================ CONFIG ============================
 
+# ---- About you (from your resume) ----
+# Your graduating batch. Jobs that name only other batches ("2025/2026 pass-outs") are skipped.
+GRADUATION_YEAR = 2027
+# Jobs whose description asks for more years than this ("3+ years", "4-6 yrs") are skipped.
+MAX_EXPERIENCE_YEARS = 2
+
 # Each line is ONE LinkedIn search per location; LinkedIn understands OR.
 # A quoted phrase also matches longer titles, so "flutter developer" finds
 # "Junior Flutter Developer", "Jr. Flutter Developer" and "Flutter Developer Intern".
@@ -40,7 +46,7 @@ SEARCH_KEYWORDS = [
     '"mobile app developer" OR "mobile application developer" OR "app developer intern" OR "kotlin developer"',
     '"SDE 1" OR "SDE I" OR "software development engineer I" OR "software engineer I"',
     '"software engineer" OR "software developer" OR "associate software engineer" OR "graduate engineer trainee"',
-    '"junior software engineer" OR "junior software developer" OR "trainee software engineer" OR "software engineer fresher"',
+    f'"{GRADUATION_YEAR} batch" OR "{GRADUATION_YEAR} graduates" OR "{GRADUATION_YEAR} passout" OR "class of {GRADUATION_YEAR}"',
     '"backend developer" OR "python developer" OR "node.js developer" OR "AI engineer" OR "web developer"',
     '"full stack developer" OR "full stack engineer" OR "full stack intern" OR "full stack internship" OR "MERN stack developer"',
 ]
@@ -75,10 +81,11 @@ JUNIOR_ROLE_PATTERN = re.compile(
 INTERN_ONLY_ROLE_PATTERN = re.compile(r"\b(se|sd|engineer(ing)?|development|stack|web|react)\b", re.I)
 INTERN_PATTERN = re.compile(r"\b(intern|internship|trainee|apprentice)\b", re.I)
 # Titles matching either of these are always skipped: senior words, and level 2+
-# such as "SDE-2", "SDE II", "Software Engineer 3".
+# such as "SDE-2", "SDE II", "Software Engineer 3", "Developer L3".
 SENIOR_PATTERN = re.compile(
-    r"\b(senior|sr|lead|principal|staff|manager|head|architect|director|vp|ii|iii|iv)\b"
-    r"|\b(sde|swe|engineer|developer)\s*[-–]?\s*[2-9]\b",
+    r"\b(senior|sr|lead|principal|staff|manager|head|architect|director|vp|avp|svp|"
+    r"vice president|experienced|intermediate|intmd|mid[- ]?level|expert|ii|iii|iv)\b"
+    r"|\b(sde|swe|engineer|developer|l)\s*[-–]?\s*[2-9]\b",
     re.I,
 )
 EXCLUDE_PATTERN = re.compile(
@@ -115,9 +122,15 @@ SKILLS = {
     "Postman": r"postman",
     "Clean Architecture": r"clean architecture",
     "Atomic Design": r"atomic design",
+    "Kotlin Multiplatform": r"kotlin multiplatform|kmp|compose multiplatform",
+    "HTML/CSS": r"html5?|css3?",
+    "Figma": r"figma",
+    "DSA": r"dsa|data structures?(\s*(and|&)\s*algorithms?)?",
+    "OOP": r"oops?|object[- ]oriented( programming)?",
 }
-# Max job descriptions to read per run (each one is an extra LinkedIn request).
-MAX_DETAIL_FETCHES = 15
+# Max new jobs to check per run. Each check reads the job description (one extra
+# LinkedIn request); jobs over the limit are checked on the next run.
+MAX_JOBS_CHECKED_PER_RUN = 15
 
 SEEN_FILE = Path(__file__).with_name("seen_jobs.json")
 MAX_SEEN = 3000
@@ -224,6 +237,7 @@ def fetch_description(job_id: str) -> str:
 
 
 def is_relevant(title: str) -> bool:
+    title = title.replace("_", " ")  # "IN_Senior Associate_Java" -> words
     if EXCLUDE_PATTERN.search(title) or SENIOR_PATTERN.search(title):
         return False
     if JUNIOR_ROLE_PATTERN.search(title):
@@ -233,6 +247,94 @@ def is_relevant(title: str) -> bool:
 
 def match_skills(text: str) -> list[str]:
     return [name for name, pattern in SKILL_PATTERNS.items() if pattern.search(text)]
+
+# ============================ ELIGIBILITY ============================
+
+_NUMBER_WORDS = {"one": "1", "two": "2", "three": "3", "four": "4", "five": "5",
+                 "six": "6", "seven": "7", "eight": "8", "nine": "9", "ten": "10"}
+_NUMBER_WORD_PATTERN = re.compile(r"\b(" + "|".join(_NUMBER_WORDS) + r")\b", re.I)
+_YEARS = r"(?:years?|yrs?)'?"
+_NUM = r"(?<![\d.])(\d{1,2}(?:\.\d)?)"
+# Each pattern captures the MINIMUM years a job asks for.
+_EXPERIENCE_PATTERNS = [
+    re.compile(rf"{_NUM}\s*(?:-|–|to)\s*\d{{1,2}}(?!\d)\s*\+?\s*{_YEARS}", re.I),            # 2-4 years
+    re.compile(rf"{_NUM}\s*\+\s*{_YEARS}", re.I),                                           # 3+ years
+    re.compile(rf"{_NUM}\s*\+?\s*yoe\b", re.I),                                              # 5+ YOE
+    re.compile(rf"(?:minimum|min\.?|at\s*least)\s*(?:of\s*)?{_NUM}\s*{_YEARS}", re.I),       # at least 3 years
+    re.compile(rf"{_NUM}\s*{_YEARS}\s*(?:of\s*)?(?:[\w-]+\s+){{0,3}}?(?:experience|exp)\b", re.I),  # 4 years of relevant experience
+    re.compile(rf"experience\s*(?:of|:|-|–)?\s*{_NUM}\s*{_YEARS}", re.I),                    # experience: 3 years
+]
+# "up to 3 years" / "less than 2 years" set no minimum.
+_UPPER_BOUND_BEFORE = re.compile(r"(up\s*to|upto|max(imum)?|less than|under|below|within)\s*$", re.I)
+# Bigger numbers are usually about the company ("25 years of experience in the industry").
+_MAX_PLAUSIBLE_YEARS = 15
+
+_BATCH_WORDS = r"batch(?:es)?|pass(?:ed|ing)?[\s-]?outs?|graduat\w*|grads?|class of|year of passing|yop"
+_YEAR_LIST = r"20\d{2}(?:\s*(?:,|/|&|and|or|-|–|to)\s*(?:20)?\d{2}(?!\d))*"
+_BATCH_PATTERNS = [
+    re.compile(rf"(?<!\d)({_YEAR_LIST})[^\d\n.]{{0,15}}?\b(?:{_BATCH_WORDS})", re.I),  # "2025/2026 batch"
+    re.compile(rf"\b(?:{_BATCH_WORDS})[^\d\n.]{{0,20}}?({_YEAR_LIST})(?!\d)", re.I),   # "Batch: 2025, 2026"
+]
+_OPEN_ENDED_AFTER = re.compile(r"^\W*(onwards|and above|& above|or later|and later|& later|and after|\+)", re.I)
+
+
+def required_experience(text: str) -> float | None:
+    """Minimum years of experience the job asks for (its first mention), or None."""
+    text = _NUMBER_WORD_PATTERN.sub(lambda m: _NUMBER_WORDS[m.group(1).lower()], text)
+    mentions: list[tuple[int, float]] = []
+    for pattern in _EXPERIENCE_PATTERNS:
+        for m in pattern.finditer(text):
+            years = float(m.group(1))
+            if _UPPER_BOUND_BEFORE.search(text[max(0, m.start() - 15):m.start()]):
+                years = 0.0
+            if years <= _MAX_PLAUSIBLE_YEARS:
+                mentions.append((m.start(), years))
+    return min(mentions)[1] if mentions else None
+
+
+def _expand_years(group: str, open_ended: bool) -> set[int]:
+    found = [int(y) if len(y) == 4 else 2000 + int(y) for y in re.findall(r"\d{2,4}", group)]
+    found = [y for y in found if 2015 <= y <= 2035]
+    if not found:
+        return set()
+    if open_ended:
+        return set(range(min(found), 2036))
+    if len(found) == 2 and re.search(r"-|–|to", group):
+        return set(range(min(found), max(found) + 1))
+    return set(found)
+
+
+def batch_years(text: str) -> set[int]:
+    """Graduation years the job is open to, e.g. {2025, 2026}; empty if not stated."""
+    years: set[int] = set()
+    for pattern in _BATCH_PATTERNS:
+        for m in pattern.finditer(text):
+            open_ended = bool(_OPEN_ENDED_AFTER.search(text[m.end():m.end() + 15]))
+            years |= _expand_years(m.group(1), open_ended)
+    return years
+
+
+def ineligible_reason(text: str) -> str | None:
+    years = required_experience(text)
+    if years is not None and years > MAX_EXPERIENCE_YEARS:
+        return f"asks for {years:g}+ years of experience"
+    batches = batch_years(text)
+    if batches and GRADUATION_YEAR not in batches:
+        return "only for batch " + ", ".join(map(str, sorted(batches)))
+    return None
+
+
+def check_job(job: dict[str, str]) -> tuple[str, list[str]]:
+    """Read the job description: ("send", skills), ("skip", []) or ("retry", [])."""
+    description = fetch_description(job["id"])
+    if not description:
+        return "retry", []  # LinkedIn didn't answer; try again next run
+    text = f"{job['title']}\n{description}"
+    reason = ineligible_reason(text)
+    if reason:
+        print(f"[skip] {job['title']} - {reason}")
+        return "skip", []
+    return "send", match_skills(text)
 
 # ============================ NTFY ============================
 
@@ -300,17 +402,17 @@ def find_new_jobs(seen: set[str]) -> dict[str, dict[str, str]]:
 
 def run_once() -> None:
     seen = load_seen()
-    new_jobs = find_new_jobs(set(seen))
+    new_jobs = list(find_new_jobs(set(seen)).values())
     print(f"[info] {len(new_jobs)} new relevant job(s)")
+    if len(new_jobs) > MAX_JOBS_CHECKED_PER_RUN:
+        print(f"[info] checking {MAX_JOBS_CHECKED_PER_RUN} now, the rest next run")
 
-    for i, job in enumerate(new_jobs.values()):
-        skills: list[str] = []
-        if i < MAX_DETAIL_FETCHES:
-            skills = match_skills(job["title"] + " " + fetch_description(job["id"]))
-            _pause(1.0, 2.0)
-        if send_ntfy(job["title"], build_message(job, skills), job["link"]):
-            seen = [*seen, job["id"]]
-        time.sleep(1)
+    for job in new_jobs[:MAX_JOBS_CHECKED_PER_RUN]:
+        status, skills = check_job(job)
+        _pause(1.0, 2.0)
+        sent = status == "send" and send_ntfy(job["title"], build_message(job, skills), job["link"])
+        if status == "skip" or sent:
+            seen = [*seen, job["id"]]  # never check this job again
     save_seen(seen)
 
 
