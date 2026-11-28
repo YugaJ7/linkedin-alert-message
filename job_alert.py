@@ -56,6 +56,15 @@ LOCATIONS = ["India"]
 # Locations listed here return only remote jobs, e.g. {"India"}.
 REMOTE_ONLY_FOR: set[str] = set()
 
+# Never notify for these companies. Matching ignores case, spaces and punctuation,
+# and also catches longer names ("ThinkNovaa" blocks "ThinkNovaa Pvt. Ltd.").
+BLOCKED_COMPANIES = [
+    "TalentConnect",
+    "JobSphere",
+    "Dexterz",       # Dexterz Technology / Technologies
+    "ThinkNovaa",
+]
+
 # Only look at jobs posted in the last N seconds (3600 = 1 hour).
 POSTED_WITHIN_SECONDS = 3600
 # LinkedIn experience levels: 1 = internship, 2 = entry level.
@@ -245,6 +254,18 @@ def is_relevant(title: str) -> bool:
     return bool(INTERN_ONLY_ROLE_PATTERN.search(title) and INTERN_PATTERN.search(title))
 
 
+def _company_key(name: str) -> str:
+    return re.sub(r"[^a-z0-9]", "", name.lower())
+
+
+_BLOCKED_KEYS = [_company_key(c) for c in BLOCKED_COMPANIES]
+
+
+def is_blocked_company(company: str) -> bool:
+    key = _company_key(company)
+    return any(blocked in key for blocked in _BLOCKED_KEYS)
+
+
 def match_skills(text: str) -> list[str]:
     return [name for name, pattern in SKILL_PATTERNS.items() if pattern.search(text)]
 
@@ -394,7 +415,7 @@ def find_new_jobs(seen: set[str]) -> dict[str, dict[str, str]]:
             for job in fetch_jobs(kw, loc):
                 if job["id"] in seen or job["id"] in new_jobs:
                     continue
-                if is_relevant(job["title"]):
+                if is_relevant(job["title"]) and not is_blocked_company(job["company"]):
                     new_jobs[job["id"]] = job
             _pause()
     return new_jobs
